@@ -1,0 +1,206 @@
+#! /usr/bin/env python
+
+import click
+import numpy
+
+import ezdxf
+from ezdxf.r12writer import r12writer
+
+from shapely.geometry import Point, Polygon, CAP_STYLE, JOIN_STYLE
+from shapely.geometry.polygon import orient
+
+from matplotlib import pyplot as plot
+from matplotlib.collections import LineCollection
+import matplotlib.patches as patches
+
+
+
+@click.group()
+def cli():
+	pass
+
+
+
+plane_map = { 
+	'xy' : (0, 1),
+	'yz' : (1, 2),
+	'zx' : (2, 0),
+}
+
+
+
+def enumerate_entities(doc, msp, entity_type):
+	for e in msp.query(entity_type):
+		yield e
+
+	for insert in msp.query('INSERT'):
+		block = doc.blocks[insert.dxf.name]
+		for e in block.query(entity_type):
+			yield e
+
+
+
+# --- view command ------------------------------------------------------------
+
+def norm2(X):
+	return numpy.sqrt(numpy.sum(X ** 2))
+
+
+
+@cli.command()
+@click.option('--plane', type = click.Choice(['xy', 'yz', 'zx']), default = 'xy')
+@click.argument('path')
+def view(path, plane):
+	x_coord_id, y_coord_id = plane_map[plane]
+
+	# Open the inpt file
+	doc = ezdxf.readfile(path)
+	msp = doc.modelspace()
+	bbox_min = doc.header['$EXTMAX']
+	bbox_max = doc.header['$EXTMIN']
+
+	# Setup plot
+	fig, ax = plot.subplots()
+	ax.set_aspect('equal')
+	ax.set_xlim(bbox_min[0], bbox_max[0])
+	ax.set_ylim(bbox_min[1], bbox_max[1])
+
+	# Gather lines
+	segment_list = [(e.dxf.start[:2], e.dxf.end[:2]) for e in enumerate_entities(doc, msp, 'LINE')]
+	
+	# Gather polylines
+	for e in enumerate_entities(doc, msp, 'POLYLINE'):
+		for i in range(len(e.vertices)):
+			A, B = e.vertices[i].dxf, e.vertices[(i + 1) % len(e.vertices)].dxf
+			Axy = numpy.array((A.location[x_coord_id], A.location[y_coord_id]))
+			Bxy = numpy.array((B.location[x_coord_id], B.location[y_coord_id]))
+			
+			if A.bulge == 0:
+				segment_list.append((Axy, Bxy))
+			else:
+				Cxy = (Axy + Bxy) / 2
+				AB_len = norm2(Bxy - Axy)
+				theta = (180 / numpy.pi) * numpy.arcsin(A.bulge)
+				AB_dir = (Bxy - Axy) / AB_len
+				alpha = (180 / numpy.pi) * numpy.arctan2(-AB_dir[0], AB_dir[1])					
+
+				patch = patches.Arc(Cxy, AB_len, AB_len, angle = alpha, theta1 = -theta, theta2 = theta, linewidth = 1, fill = False)
+				ax.add_patch(patch)
+
+	# Plot the lines
+	ax.add_collection(LineCollection(segment_list, linewidth = 1, colors = 'k', linestyle = 'solid'))
+
+	# Plot the circles
+	for e in enumerate_entities(doc, msp, 'CIRCLE'):
+		patch = patches.Circle(e.dxf.center[:2], e.dxf.radius, linewidth = 1, fill = False)
+		ax.add_patch(patch)
+
+	# Plot the arcs
+	for e in enumerate_entities(doc, msp, 'ARC'):
+		patch = patches.Arc(e.dxf.center[:2], 2 * e.dxf.radius, 2 * e.dxf.radius, theta1 = e.dxf.start_angle, theta2 = e.dxf.end_angle, linewidth = 1, fill = False)
+		ax.add_patch(patch)
+
+	# Job done
+	plot.show()
+
+
+
+# --- offset command ----------------------------------------------------------
+
+def enumerate_circles(doc, msp, plane):
+	for e in enumerate_entities(doc, msp, 'CIRCLE'):
+		yield Polygon(Point(e.dxf.center[:2]).buffer(e.dxf.radius))
+
+
+
+def enumerate_polygons(doc, msp, plane):
+	x_coord_id, y_coord_id = plane_map[plane]
+
+	for e in enumerate_entities(doc, msp, 'POLYLINE'):
+		vertex_list = []
+		for i in range(len(e.vertices)):
+			A, B = e.vertices[i].dxf, e.vertices[(i + 1) % len(e.vertices)].dxf
+			Axy = numpy.array((A.location[x_coord_id], A.location[y_coord_id]))
+			Bxy = numpy.array((B.location[x_coord_id], B.location[y_coord_id]))
+				
+			if A.bulge == 0:
+				vertex_list.append(Axy)
+			else:
+				Cxy = (Axy + Bxy) / 2
+				AB_len = norm2(Bxy - Axy)
+				theta = numpy.arcsin(A.bulge)
+				AB_dir = (Bxy - Axy) / AB_len
+				alpha = numpy.arctan2(-AB_dir[0], AB_dir[1])							
+
+				step_count = 64 # TODO : should use arc length instead of hard-coded segment count
+				for n in range(step_count):
+					angle = alpha + theta * (2 * n / step_count - 1) 
+					vertex_list.append(Cxy + (AB_len / 2) * numpy.array([numpy.cos(angle), numpy.sin(angle)]))
+
+		yield orient(Polygon(vertex_list))
+
+
+		
+@cli.command()
+@click.option('--offset', type = float, default = 1)
+@click.option('--plane', type = click.Choice(['xy', 'yz', 'zx']), default = 'xy')
+@click.argument('input_path')
+@click.argument('output_path')
+def offset(input_path, output_path, offset, plane):
+	# Read the list of paths from input
+	doc = ezdxf.readfile(input_path)
+	msp = doc.modelspace()
+	polygon_list = list(enumerate_polygons(doc, msp, plane)) + list(enumerate_circles(doc, msp, plane))
+
+	# Determines which polygon are inside or outside
+	graph = { i : [] for i in range(len(polygon_list)) }
+	for i, poly_i in enumerate(polygon_list):
+		for j, poly_j in enumerate(polygon_list[i+1:], i+1):
+			if poly_i.within(poly_j):
+				graph[j].append(i)
+			if poly_j.within(poly_i):
+				graph[i].append(j)
+
+	def is_root(i):
+		for children in graph.values():
+			if i in children:
+				return False
+		return True
+
+	outside_set = set(i for i in range(len(polygon_list)) if is_root(i))
+	inside_set = set()
+
+	stack = list(outside_set)
+	while len(stack) > 0:
+		i = stack.pop()
+		if i in inside_set:
+			for j in graph[i]:
+				outside_set.add(j)
+				stack.append(j)
+		else:
+			for j in graph[i]:
+				inside_set.add(j)
+				stack.append(j)
+
+	# Compute offset
+	offset_polygon_list = []
+	for i, poly in enumerate(polygon_list):
+		offset_poly = poly.buffer(offset if i in outside_set else -offset, join_style = JOIN_STYLE.mitre)
+		if not offset_poly.is_empty:
+			offset_polygon_list.append(offset_poly)
+
+	# Generate output
+	with r12writer(output_path) as dxf:
+		for poly in offset_polygon_list:
+			dxf.add_polyline(poly.exterior.coords)
+
+		#for poly in polygon_list:
+		#	dxf.add_polyline(poly.exterior.coords)
+
+
+
+# --- Entry point -------------------------------------------------------------
+
+if __name__ == '__main__':
+ 	cli()
+
