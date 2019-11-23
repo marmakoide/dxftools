@@ -42,6 +42,15 @@ def enumerate_entities(doc, msp, entity_type):
 
 # --- view command ------------------------------------------------------------
 
+rad_2_deg = 180. / numpy.pi
+
+
+
+def norm2_squared(X):
+	return numpy.sum(X ** 2)
+
+
+
 def norm2(X):
 	return numpy.sqrt(numpy.sum(X ** 2))
 
