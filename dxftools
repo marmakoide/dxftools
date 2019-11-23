@@ -62,8 +62,9 @@ def view(path, plane):
 	# Setup plot
 	fig, ax = plot.subplots()
 	ax.set_aspect('equal')
-	ax.set_xlim(bbox_min[0], bbox_max[0])
-	ax.set_ylim(bbox_min[1], bbox_max[1])
+	if bbox_min is not None and bbox_max is not None:
+		ax.set_xlim(bbox_min[0], bbox_max[0])
+		ax.set_ylim(bbox_min[1], bbox_max[1])
 
 	# Gather lines
 	segment_list = [(e.dxf.start[:2], e.dxf.end[:2]) for e in enumerate_entities(doc, msp, 'LINE')]
