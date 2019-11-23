@@ -78,13 +78,8 @@ def view(path, plane):
 			if A.bulge == 0:
 				segment_list.append((Axy, Bxy))
 			else:
-				Cxy = (Axy + Bxy) / 2
-				AB_len = norm2(Bxy - Axy)
-				theta = (180 / numpy.pi) * numpy.arcsin(A.bulge)
-				AB_dir = (Bxy - Axy) / AB_len
-				alpha = (180 / numpy.pi) * numpy.arctan2(-AB_dir[0], AB_dir[1])					
-
-				patch = patches.Arc(Cxy, AB_len, AB_len, angle = alpha, theta1 = -theta, theta2 = theta, linewidth = 1, fill = False)
+				Cxy, alpha, beta, radius = ezdxf.math.bulge_to_arc(Axy, Bxy, A.bulge)
+				patch = patches.Arc(Cxy, 2 * radius, 2 * radius, angle = 0, theta1 = rad_2_deg * alpha, theta2 = rad_2_deg * beta, linewidth = 1, fill = False)	
 				ax.add_patch(patch)
 
 	# Plot the lines
@@ -126,16 +121,29 @@ def enumerate_polygons(doc, msp, plane):
 			if A.bulge == 0:
 				vertex_list.append(Axy)
 			else:
-				Cxy = (Axy + Bxy) / 2
-				AB_len = norm2(Bxy - Axy)
-				theta = numpy.arcsin(A.bulge)
-				AB_dir = (Bxy - Axy) / AB_len
-				alpha = numpy.arctan2(-AB_dir[0], AB_dir[1])							
+				Cxy, alpha, beta, radius = ezdxf.math.bulge_to_arc(Axy, Bxy, A.bulge)
+				Cxy = numpy.array((Cxy.x, Cxy.y))
+
+				U = numpy.array([numpy.cos(alpha), numpy.sin(alpha)])
+				V = numpy.array([numpy.cos(beta),  numpy.sin(beta)])
+
+				ccw = True
+				if numpy.isclose(norm2_squared(Bxy - (radius * U + Cxy)), 0):
+					U, V = V, U
+					ccw = False
+
+				UxV = numpy.cross(U, V)
+				W = (U + V) / 2
+				if UxV < 0 and ccw or UxV > 0 and not ccw:
+					W = -W
 
 				step_count = 64 # TODO : should use arc length instead of hard-coded segment count
-				for n in range(step_count):
-					angle = alpha + theta * (2 * n / step_count - 1) 
-					vertex_list.append(Cxy + (AB_len / 2) * numpy.array([numpy.cos(angle), numpy.sin(angle)]))
+				for I, J in ((U, W), (W, V)):		
+					for n in range(step_count // 2):
+						k = n / (step_count // 2 - 1)
+						M = (1 - k) * I + k * J
+						M /= norm2(M)
+						vertex_list.append(Cxy + radius * numpy.array([M[0], M[1]]))
 
 		yield orient(Polygon(vertex_list))
 
