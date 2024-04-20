@@ -4,7 +4,7 @@ import click
 import numpy
 
 import ezdxf
-from ezdxf.r12writer import r12writer
+from ezdxf.addons import r12writer
 
 from shapely.geometry import Point, Polygon, CAP_STYLE, JOIN_STYLE
 from shapely.geometry.polygon import orient
